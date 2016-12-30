@@ -1,4 +1,4 @@
-import ast, collections, re
+import ast, collections, re, sys
 
 
 with open('python_std/python_funcs.txt') as f:
@@ -56,6 +56,9 @@ def parse_file(filename):
         short_name = call_node.func.id
         ignore_set = std_funcs
       else: # ast.Attribute
+        if not hasattr(call_node.func, 'attr'):
+          self.generic_visit(call_node)
+          return
         short_name = call_node.func.attr
         ignore_set = std_methods
 
@@ -122,7 +125,7 @@ class Walker:
     def visit_node(root_proper_name, depth):
       short_name = root_proper_name
       if '.' in root_proper_name:
-        short_name = root_proper_name.rsplit('.', 1)[1]
+        short_name = '.'.join(root_proper_name.rsplit('.', 2)[-2:])
       print_(depth, short_name)
 
     def visit_ambiguous_children(proper_names, depth):
@@ -132,7 +135,8 @@ class Walker:
                     sort_key=lambda key_val: -key_val[1].num_children)
 
 if __name__ == '__main__':
-  my_nodes, short_name_to_proper_names = parse_file('callgraph.py')
+  path = sys.argv[1]
+  my_nodes, short_name_to_proper_names = parse_file(path)
   walker = Walker(my_nodes, short_name_to_proper_names)
   walker.walk_nodes()
   walker.print_graph()
