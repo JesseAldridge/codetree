@@ -86,57 +86,65 @@ class Walker:
     self.my_nodes = my_nodes
     self.short_name_to_proper_names = short_name_to_proper_names
 
-  def walk_nodes(self, visit_node=lambda node, depth: None,
-                 visit_ambiguous_children=lambda node, depth: None, sort_key=None):
-    self.name_to_num_children = {}
+  def walk_nodes(self,
+                 visit_node=lambda node, depth: None,
+                 visit_ambiguous_children=lambda node, depth: None,
+                 visit_short_leaf=lambda node, depth: None,
+                 sort_key=None):
+    name_to_num_children = {}
+
+    def walk_inner(root_proper_name, depth):
+      if root_proper_name not in name_to_num_children:
+        visit_node(root_proper_name, depth)
+        name_to_num_children[root_proper_name] = num_children = 0
+        for callee_short_name in self.my_nodes[root_proper_name].callees:
+          proper_names = short_name_to_proper_names.get(callee_short_name, [])
+          if not proper_names:
+            visit_short_leaf(callee_short_name, depth + 1)
+            continue
+          if len(proper_names) == 1:
+            num_children += walk_inner(proper_names[0], depth + 1) + 1
+          else:
+            # (here we aren't sure which node the short_name refers to)
+            visit_ambiguous_children(proper_names, depth)
+            num_children += 1
+        name_to_num_children[root_proper_name] = num_children
+        self.my_nodes[root_proper_name].num_children = num_children
+      return name_to_num_children[root_proper_name]
 
     if sort_key:
-      key_vals = sorted(my_nodes.iteritems(), key=sort_key)
+      name_node_pairs = sorted(my_nodes.iteritems(), key=sort_key)
     else:
-      key_vals = my_nodes.iteritems()
+      name_node_pairs = my_nodes.iteritems()
 
-    for prefix, my_node in key_vals:
-      self.walk_inner(prefix, 0, visit_node, visit_ambiguous_children)
+    for prefix, my_node in name_node_pairs:
+      walk_inner(prefix, 0)
 
-  def walk_inner(self, root_proper_name, depth, visit_node, visit_ambiguous_children):
-    if root_proper_name not in self.name_to_num_children:
-      visit_node(root_proper_name, depth)
-      self.name_to_num_children[root_proper_name] = num_children = 0
-      for callee_short_name in self.my_nodes[root_proper_name].callees:
-        proper_names = short_name_to_proper_names.get(callee_short_name, [])
-        if not proper_names:
-          continue
-        if len(proper_names) == 1:
-          num_children += self.walk_inner(
-            proper_names[0], depth + 1,
-            visit_node, visit_ambiguous_children) + 1
-        else:
-          # (here we aren't sure which node the short_name refers to)
-          visit_ambiguous_children(proper_names, depth)
-          num_children += 1
-      self.name_to_num_children[root_proper_name] = num_children
-      self.my_nodes[root_proper_name].num_children = num_children
-    return self.name_to_num_children[root_proper_name]
 
   def print_graph(self):
     def print_(depth, *a):
       print '{}{}'.format('  ' * depth, ' '.join(str(arg) for arg in a))
 
     def visit_node(root_proper_name, depth):
-      short_name = root_proper_name
-      if '.' in root_proper_name:
-        short_name = '.'.join(root_proper_name.rsplit('.', 2)[-2:])
-      print_(depth, short_name)
+      print_(depth, proper_to_short(root_proper_name))
 
     def visit_ambiguous_children(proper_names, depth):
-      print_(depth, ' ', proper_names)
+      print_(depth, ' ', [proper_to_short(proper_name) for proper_name in proper_names])
 
-    self.walk_nodes(visit_node, visit_ambiguous_children,
+    self.walk_nodes(visit_node, visit_ambiguous_children, visit_node,
                     sort_key=lambda key_val: -key_val[1].num_children)
+
+def proper_to_short(proper_name):
+  short_name = proper_name
+  if '.' in proper_name:
+    short_name = '.'.join(proper_name.rsplit('/', 1)[-1].rsplit('.', 2)[-2:])
+  return short_name
 
 if __name__ == '__main__':
   path = sys.argv[1]
   my_nodes, short_name_to_proper_names = parse_file(path)
   walker = Walker(my_nodes, short_name_to_proper_names)
   walker.walk_nodes()
+  print 'code graph'
+  print '----------'
   walker.print_graph()
