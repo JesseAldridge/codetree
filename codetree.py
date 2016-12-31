@@ -1,13 +1,13 @@
-import ast, collections, re, sys
+#!/usr/bin/python
+import ast, collections, re, sys, os
 
 
-with open('python_std/python_funcs.txt') as f:
-  text = f.read()
-std_funcs = set(text.splitlines())
+def read_lines(filename):
+  with open(os.path.expanduser('~/.codetree/python_std/' + filename)) as f:
+    text = f.read()
+  return set(text.splitlines())
 
-with open('python_std/python_methods.txt') as f:
-  text = f.read()
-std_methods = set(text.splitlines())
+std_funcs, std_methods = read_lines('python_funcs.txt'), read_lines('python_methods.txt')
 
 
 class MyNode:
