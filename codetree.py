@@ -1,23 +1,19 @@
 #!/usr/bin/python
 import ast, collections, re, sys, os
 
+def create_callgraph_from_files(paths):
+  def read_lines(filename):
+    with open(os.path.expanduser('~/.codetree/python_std/' + filename)) as f:
+      text = f.read()
+    return set(text.splitlines())
 
-def read_lines(filename):
-  with open(os.path.expanduser('~/.codetree/python_std/' + filename)) as f:
-    text = f.read()
-  return set(text.splitlines())
+  std_funcs, std_methods = read_lines('python_funcs.txt'), read_lines('python_methods.txt')
 
-std_funcs, std_methods = read_lines('python_funcs.txt'), read_lines('python_methods.txt')
-
-
-class MyNode:
-  def __init__(self, name):
-    self.name = name
-    self.callees = []
-    self.num_children = 0
-
-
-def parse_file(filename):
+  class MyNode:
+    def __init__(self, name):
+      self.name = name
+      self.callees = []
+      self.num_children = 0
 
   class TopLevelVisitor(ast.NodeVisitor):
     def __init__(self, prefix):
@@ -67,72 +63,87 @@ def parse_file(filename):
 
       self.generic_visit(call_node)
 
-  with open(filename) as f:
-    text = f.read()
-  text = re.sub('^ *#.+', '', text)
-
-  root_node = ast.parse(text)
-
-  module_prefix = filename.rsplit('.', 1)[0]
-
   my_nodes = {}
   short_name_to_proper_names = {}
 
-  TopLevelVisitor(module_prefix).visit(root_node)
+  for path in paths:
+    with open(path) as f:
+      text = f.read()
+    text = re.sub('^ *#.+', '', text)
+
+    root_node = ast.parse(text)
+
+    module_prefix = path.rsplit('.', 1)[0]
+
+    TopLevelVisitor(module_prefix).visit(root_node)
   return my_nodes, short_name_to_proper_names
 
-class Walker:
-  def __init__(self, my_nodes, short_name_to_proper_names):
-    self.my_nodes = my_nodes
-    self.short_name_to_proper_names = short_name_to_proper_names
+def walk_nodes(my_nodes, short_name_to_proper_names,
+               visit_node=lambda node, depth: None,
+               visit_ambiguous_children=lambda node, depth: None,
+               visit_short_leaf=lambda node, depth: None,
+               sort_key=None):
+  name_to_num_children = {}
 
-  def walk_nodes(self,
-                 visit_node=lambda node, depth: None,
-                 visit_ambiguous_children=lambda node, depth: None,
-                 visit_short_leaf=lambda node, depth: None,
-                 sort_key=None):
-    name_to_num_children = {}
+  def walk_inner(root_proper_name, depth):
+    if root_proper_name not in name_to_num_children:
+      visit_node(root_proper_name, depth)
+      name_to_num_children[root_proper_name] = num_children = 0
+      for callee_short_name in my_nodes[root_proper_name].callees:
+        proper_names = short_name_to_proper_names.get(callee_short_name, [])
+        if not proper_names:
+          visit_short_leaf(callee_short_name, depth + 1)
+          continue
 
-    def walk_inner(root_proper_name, depth):
-      if root_proper_name not in name_to_num_children:
-        visit_node(root_proper_name, depth)
-        name_to_num_children[root_proper_name] = num_children = 0
-        for callee_short_name in self.my_nodes[root_proper_name].callees:
-          proper_names = short_name_to_proper_names.get(callee_short_name, [])
-          if not proper_names:
-            visit_short_leaf(callee_short_name, depth + 1)
-            continue
-          if len(proper_names) == 1:
-            num_children += walk_inner(proper_names[0], depth + 1) + 1
-          else:
-            # (here we aren't sure which node the short_name refers to)
-            visit_ambiguous_children(proper_names, depth)
-            num_children += 1
-        name_to_num_children[root_proper_name] = num_children
-        self.my_nodes[root_proper_name].num_children = num_children
-      return name_to_num_children[root_proper_name]
+        my_proper_name = None
+        if len(proper_names) == 1:
+          my_proper_name = proper_names[0]
+        else:
+          my_parent_class = root_proper_name.rsplit('.', 2)[-2]
+          for potential_proper_name in proper_names:
+            other_parent_class = potential_proper_name.rsplit('.', 2)[-2]
+            if my_parent_class == other_parent_class:
+              my_proper_name = potential_proper_name
+              break
 
-    if sort_key:
-      name_node_pairs = sorted(my_nodes.iteritems(), key=sort_key)
-    else:
-      name_node_pairs = my_nodes.iteritems()
+        if my_proper_name:
+          num_children += walk_inner(proper_names[0], depth + 1) + 1
+        else:
+          # (here we aren't sure which node the short_name refers to)
+          visit_ambiguous_children(proper_names, depth)
+          num_children += 1
+      name_to_num_children[root_proper_name] = num_children
+      my_nodes[root_proper_name].num_children = num_children
+    return name_to_num_children[root_proper_name]
 
-    for prefix, my_node in name_node_pairs:
-      walk_inner(prefix, 0)
+  if sort_key:
+    name_node_pairs = sorted(my_nodes.iteritems(), key=sort_key)
+  else:
+    name_node_pairs = my_nodes.iteritems()
+
+  for prefix, my_node in name_node_pairs:
+    walk_inner(prefix, 0)
 
 
-  def print_graph(self):
-    def print_(depth, *a):
-      print '{}{}'.format('  ' * depth, ' '.join(str(arg) for arg in a))
+def format_depth(depth, *a):
+  return '{}{}'.format('  ' * depth, ' '.join(str(arg) for arg in a))
 
-    def visit_node(root_proper_name, depth):
-      print_(depth, proper_to_short(root_proper_name))
+def print_graph(my_nodes, short_name_to_proper_names, print_replace=None):
+  def print_(depth, *a):
+    print format_depth(depth, *a)
 
-    def visit_ambiguous_children(proper_names, depth):
-      print_(depth, ' ', [proper_to_short(proper_name) for proper_name in proper_names])
+  if print_replace:
+    print_ = print_replace
 
-    self.walk_nodes(visit_node, visit_ambiguous_children, visit_node,
-                    sort_key=lambda key_val: -key_val[1].num_children)
+  def visit_node(root_proper_name, depth):
+    print_(depth, proper_to_short(root_proper_name))
+
+  def visit_ambiguous_children(proper_names, depth):
+    print_(depth, ' ', [proper_to_short(proper_name) for proper_name in proper_names])
+
+  walk_nodes(my_nodes, short_name_to_proper_names,
+             visit_node, visit_ambiguous_children, visit_node,
+             sort_key=lambda key_val: -key_val[1].num_children)
 
 def proper_to_short(proper_name):
   short_name = proper_name
@@ -140,11 +151,11 @@ def proper_to_short(proper_name):
     short_name = '.'.join(proper_name.rsplit('/', 1)[-1].rsplit('.', 2)[-2:])
   return short_name
 
+def main():
+  paths = sys.argv[1:] or sys.stdin.read().splitlines()
+  my_nodes, short_name_to_proper_names = create_callgraph_from_files(paths)
+  walk_nodes(my_nodes, short_name_to_proper_names)
+  print_graph(my_nodes, short_name_to_proper_names)
+
 if __name__ == '__main__':
-  path = sys.argv[1]
-  my_nodes, short_name_to_proper_names = parse_file(path)
-  walker = Walker(my_nodes, short_name_to_proper_names)
-  walker.walk_nodes()
-  print 'code graph'
-  print '----------'
-  walker.print_graph()
+  main()
